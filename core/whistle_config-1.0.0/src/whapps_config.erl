@@ -249,9 +249,20 @@ get_value(Category, ?KEY_DEFAULT, Keys, Default, JObj) ->
     get_default_value(Category, Keys, Default, JObj);
 get_value(Category, Node, Keys, Default, JObj) ->
     case wh_json:get_value([Node | Keys], JObj) of
+        'undefined' -> get_zone_value(Category, Node, Keys, Default, JObj);
+        Else -> Else
+    end.
+
+-spec get_zone_value(config_category(), config_key(), config_key(), Default, wh_json:object()) ->
+                         Default | any().
+get_zone_value(Category, _Node, Keys, Default, JObj) ->
+    Zone = wh_util:to_binary(wh_nodes:local_zone()),
+    case wh_json:get_value([Zone | Keys], JObj) of
         'undefined' -> get_default_value(Category, Keys, Default, JObj);
         Else -> Else
     end.
+%% get_zone_value(Category, _Node, Keys, Default, JObj) ->
+%%     get_default_value(Category, Keys, Default, JObj).
 
 -spec get_default_value(config_category(), config_key(), Default, wh_json:object()) ->
                                  Default | _.

@@ -1,26 +1,22 @@
 %%%-------------------------------------------------------------------
-%%% @copyright (C) 2013, 2600Hz
+%%% @copyright (C) 2012-2014, 2600Hz INC
 %%% @doc
 %%%
 %%% @end
 %%% @contributors
-%%%   James Aimonetti
 %%%-------------------------------------------------------------------
--module(cf_event_handler_sup).
+-module(whistle_config_sup).
 
 -behaviour(supervisor).
 
--include("callflow.hrl").
+-export([start_link/0
+         ,init/1
+        ]).
 
-%% API
--export([start_link/0]).
--export([new/2, new/3]).
--export([workers/0]).
+-include("whistle_config.hrl").
 
-%% Supervisor callbacks
--export([init/1]).
 
--include("callflow.hrl").
+-define(CHILDREN, []).
 
 %% ===================================================================
 %% API functions
@@ -35,18 +31,6 @@
 -spec start_link() -> startlink_ret().
 start_link() ->
     supervisor:start_link({'local', ?MODULE}, ?MODULE, []).
-
--spec new(any(), atom(), list()) -> sup_startchild_ret().
-new(Name, M, A) ->
-    supervisor:start_child(?MODULE, ?WORKER_NAME_ARGS_TYPE(Name, M, A, 'temporary')).
-
--spec new(atom(), list()) -> sup_startchild_ret().
-new(M, A) ->
-    supervisor:start_child(?MODULE, ?WORKER_ARGS_TYPE(M, A, 'temporary')).
-
--spec workers() -> pids().
-workers() ->
-    [Pid || {_, Pid, 'worker', [_]} <- supervisor:which_children(?MODULE)].
 
 %% ===================================================================
 %% Supervisor callbacks
@@ -64,9 +48,8 @@ workers() ->
 -spec init([]) -> sup_init_ret().
 init([]) ->
     RestartStrategy = 'one_for_one',
-    MaxRestarts = 0,
+    MaxRestarts = 25,
     MaxSecondsBetweenRestarts = 1,
 
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
-
-    {'ok', {SupFlags, []}}.
+    {'ok', {SupFlags, ?CHILDREN}}.

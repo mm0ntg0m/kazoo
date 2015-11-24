@@ -37,6 +37,8 @@
                 ,response_queue :: api_binary()
                 ,queue :: api_binary()
                 ,timeout :: reference()
+                ,call_id :: api_binary()
+                ,call_ids :: api_binaries()
                }).
 -type state() :: #state{}.
 
@@ -45,6 +47,17 @@
 -define(QUEUE_OPTIONS, []).
 -define(CONSUME_OPTIONS, []).
 
+-define(CALL_BINDING(CallId), {'call', [{'callid', CallId}
+                                        ,{'restrict_to',
+                                          [<<"CHANNEL_DESTROY">>
+                                           ,<<"CHANNEL_REPLACED">>
+                                           ,<<"CHANNEL_TRANSFEROR">>
+                                           ,<<"CHANNEL_EXECUTE_COMPLETE">>
+                                           ,<<"CHANNEL_BRIDGE">>
+                                          ]
+                                         }
+                                       ]
+                              }).
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -59,12 +72,7 @@
 -spec start_link(wh_json:objects(), wapi_offnet_resource:req()) -> startlink_ret().
 start_link(Endpoints, OffnetReq) ->
     CallId = wapi_offnet_resource:call_id(OffnetReq),
-    Bindings = [{'call', [{'callid', CallId}
-                          ,{'restrict_to', [<<"CHANNEL_DESTROY">>
-                                            ,<<"CHANNEL_EXECUTE_COMPLETE">>
-                                            ,<<"CHANNEL_BRIDGE">>
-                                           ]}
-                         ]}
+    Bindings = [?CALL_BINDING(CallId)
                 ,{'self', []}
                ],
     gen_listener:start_link(?MODULE, [{'bindings', Bindings}
@@ -100,6 +108,8 @@ init([Endpoints, OffnetReq]) ->
                           ,control_queue=ControlQ
                           ,response_queue=wapi_offnet_resource:server_id(OffnetReq)
                           ,timeout=erlang:send_after(30000, self(), 'bridge_timeout')
+                          ,call_id=wapi_offnet_resource:call_id(OffnetReq)
+                          ,call_ids=[wapi_offnet_resource:call_id(OffnetReq)]
                          }}
     end.
 
@@ -143,13 +153,14 @@ handle_cast({'bridge_result', _Props}, #state{response_queue='undefined'}=State)
 handle_cast({'bridge_result', Props}, #state{response_queue=ResponseQ}=State) ->
     wapi_offnet_resource:publish_resp(ResponseQ, Props),
     {'stop', 'normal', State};
-handle_cast({'bridged', CallId}, #state{timeout='undefined'}=State) ->
-    lager:debug("channel bridged to ~s", [CallId]),
+handle_cast({'bridged', _CallId}, #state{timeout='undefined'}=State) ->
     {'noreply', State};
 handle_cast({'bridged', CallId}, #state{timeout=TimerRef}=State) ->
     lager:debug("channel bridged to ~s, canceling timeout", [CallId]),
     _ = erlang:cancel_timer(TimerRef),
     {'noreply', State#state{timeout='undefined'}};
+handle_cast({'replaced', ReplacedBy}, #state{call_ids=CallIds}=State) ->
+    {'noreply', State#state{call_id=ReplacedBy, call_ids=[ReplacedBy | CallIds]}};
 handle_cast(_Msg, State) ->
     lager:debug("unhandled cast: ~p~n", [_Msg]),
     {'noreply', State}.
@@ -185,15 +196,34 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 handle_event(JObj, #state{request_handler=RequestHandler
                           ,resource_req=OffnetReq
+                          ,call_id=CallId
                          }) ->
-    case whapps_util:get_event_type(JObj) of
-        {<<"error">>, _} ->
+    case get_event_type(JObj) of
+        {<<"error">>, _, _} ->
             <<"bridge">> = wh_json:get_value([<<"Request">>, <<"Application-Name">>], JObj),
             lager:debug("channel execution error while waiting for bridge: ~s"
                         ,[wh_util:to_binary(wh_json:encode(JObj))]
                        ),
             gen_listener:cast(RequestHandler, {'bridge_result', bridge_error(JObj, OffnetReq)});
-        {<<"call_event">>, <<"CHANNEL_DESTROY">>} ->
+        {<<"call_event">>, <<"CHANNEL_TRANSFEREE">>, _} ->
+            lager:debug("SETP BRIDGE TRANSFEREE ~p", [JObj]),
+            Transferee = kz_call_event:other_leg_call_id(JObj),
+            gen_listener:cast(RequestHandler, {'replaced', Transferee}),
+            gen_listener:add_binding(RequestHandler, ?CALL_BINDING(Transferee));
+%            gen_listener:rm_binding(RequestHandler, ?CALL_BINDING(kz_call_event:call_id(JObj)));
+        {<<"call_event">>, <<"CHANNEL_TRANSFEROR">>, _} ->
+            lager:debug("SETP BRIDGE TRANSFEROR ~p", [JObj]),
+            Transferor = kz_call_event:other_leg_call_id(JObj),
+            gen_listener:cast(RequestHandler, {'replaced', Transferor}),
+            gen_listener:add_binding(RequestHandler, ?CALL_BINDING(Transferor));
+%            gen_listener:rm_binding(RequestHandler, ?CALL_BINDING(kz_call_event:call_id(JObj)));
+        {<<"call_event">>, <<"CHANNEL_REPLACED">>, _} ->
+            lager:debug("SETP BRIDGE REPLAEFD ~p", [JObj]),
+            ReplacedBy = kz_call_event:replaced_by(JObj),
+            gen_listener:cast(RequestHandler, {'replaced', ReplacedBy}),
+            gen_listener:add_binding(RequestHandler, ?CALL_BINDING(ReplacedBy));
+%            gen_listener:rm_binding(RequestHandler, ?CALL_BINDING(kz_call_event:call_id(JObj)));
+        {<<"call_event">>, <<"CHANNEL_DESTROY">>, CallId} ->
             lager:debug("channel was destroyed while waiting for bridge"),
             Result = case wh_json:get_value(<<"Disposition">>, JObj)
                          =:= <<"SUCCESS">>
@@ -202,7 +232,7 @@ handle_event(JObj, #state{request_handler=RequestHandler
                          'false' -> bridge_failure(JObj, OffnetReq)
                      end,
             gen_listener:cast(RequestHandler, {'bridge_result', Result});
-        {<<"call_event">>, <<"CHANNEL_EXECUTE_COMPLETE">>} ->
+        {<<"call_event">>, <<"CHANNEL_EXECUTE_COMPLETE">>, _} ->
             <<"bridge">> = wh_json:get_value(<<"Application-Name">>, JObj),
             lager:debug("channel execute complete for bridge"),
             Result = case wh_json:get_value(<<"Disposition">>, JObj)
@@ -212,9 +242,9 @@ handle_event(JObj, #state{request_handler=RequestHandler
                          'false' -> bridge_failure(JObj, OffnetReq)
                      end,
             gen_listener:cast(RequestHandler, {'bridge_result', Result});
-        {<<"call_event">>, <<"CHANNEL_BRIDGE">>} ->
-            CallId = wh_json:get_value(<<"Other-Leg-Call-ID">>, JObj),
-            gen_listener:cast(RequestHandler, {'bridged', CallId});
+        {<<"call_event">>, <<"CHANNEL_BRIDGE">>, _} ->
+            OtherLeg = wh_json:get_value(<<"Other-Leg-Call-ID">>, JObj),
+            gen_listener:cast(RequestHandler, {'bridged', OtherLeg});
         _ -> 'ok'
     end,
     {'reply', []}.
@@ -658,3 +688,8 @@ send_deny_emergency_response(OffnetReq, ControlQ) ->
               ,<<"prompt://system_media/stepswitch-emergency_not_configured/">>
              ),
     wh_call_response:send(CallId, ControlQ, Code, Cause, Media).
+
+-spec get_event_type(wh_json:object()) -> {ne_binary(), ne_binary(), ne_binary()}.
+get_event_type(JObj) ->
+    {C, E} = whapps_util:get_event_type(JObj),
+    {C, E, kz_call_event:call_id(JObj)}.

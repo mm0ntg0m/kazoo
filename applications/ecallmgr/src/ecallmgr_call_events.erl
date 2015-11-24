@@ -369,7 +369,6 @@ handle_info({'event', [CallId | Props]}, #state{node=Node
             process_channel_event(Props),
             {'noreply', State};
         {_A, _B} ->
-            lager:debug("processing ~s/~s", [_A, _B]),
             process_channel_event(Props),
             {'noreply', State}
     end;
@@ -567,11 +566,7 @@ process_channel_event(Props) ->
     ApplicationName = get_application_name(Props),
     Masqueraded = is_masquerade(Props),
     case should_publish(EventName, ApplicationName, Masqueraded) of
-        'false' ->
-            Action = props:get_value(<<"Action">>, Props),
-            lager:debug("not publishing ~s(~s): ~s"
-                        ,[EventName, ApplicationName, Action]
-                       );
+        'false' -> 'ok';
         'true' ->
             Event = create_event(EventName, ApplicationName, Props),
             publish_event(Event)
@@ -637,6 +632,10 @@ generic_call_event_props(Props) ->
      ,{<<"To-Tag">>, props:get_value(<<"variable_sip_to_tag">>, Props)}
      ,{<<"Switch-URL">>, props:get_value(<<"Switch-URL">>, Props)}
      ,{<<"Switch-URI">>, props:get_value(<<"Switch-URI">>, Props)}
+     ,{<<"Switch-Node">>, props:get_value(<<"Switch-Node">>, Props)}
+     ,{<<"Channel-State">>, get_channel_state(Props)}
+     ,{<<"Channel-Call-State">>, props:get_value(<<"Channel-Call-State">>, Props)}
+     ,{<<"Channel-Name">>, props:get_value(<<"Channel-Name">>, Props)}
      | wh_api:default_headers(?APP_NAME, ?APP_VERSION)
     ].
 
@@ -849,6 +848,8 @@ fax_specific(Props) ->
 should_publish(<<"CHANNEL_EXECUTE_COMPLETE">>, <<"bridge">>, 'false') ->
     lager:debug("suppressing bridge execute complete in favour the whistle masquerade of this event"),
     'false';
+should_publish(<<"CHANNEL_EXECUTE_COMPLETE">>, <<"set", _/binary>>, _) ->
+    'false';
 should_publish(<<"CHANNEL_EXECUTE_COMPLETE">>, <<"intercept">>, 'false') ->
     lager:debug("suppressing intercept execute complete in favour the whistle masquerade of this event"),
     'false';
@@ -888,6 +889,14 @@ get_channel_moving(Props) ->
     case is_channel_moving(Props) of
         'false' -> 'undefined';
         'true' -> 'true'
+    end.
+
+-spec get_channel_state(wh_proplist()) -> api_binary().
+get_channel_state(Props) ->
+    case props:get_value(<<"Channel-State">>, Props) of
+        'undefined' -> 'undefined';
+        <<"CS_", ChannelState/binary>> -> ChannelState;
+        Other -> Other
     end.
 
 -spec get_call_id(wh_proplist()) -> api_binary().
@@ -996,7 +1005,10 @@ get_disposition(Props) ->
 
 -spec get_hangup_code(wh_proplist()) -> api_binary().
 get_hangup_code(Props) ->
-    kzd_freeswitch:hangup_code(Props).
+    case kzd_freeswitch:hangup_code(Props) of
+        'undefined' -> <<"sip:500">>;
+        V -> V
+    end.
 
 -spec swap_call_legs(wh_proplist() | wh_json:object()) -> wh_proplist().
 -spec swap_call_legs(wh_proplist(), wh_proplist()) -> wh_proplist().
