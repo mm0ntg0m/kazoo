@@ -37,7 +37,7 @@ sup teletype_maintenance restore_system_templates
 
 ##### Restoring a Specific Template
 ```shell
-sup teletype_maintenance restore_system_templates {TEMPLATE_NAME}
+sup teletype_maintenance restore_system_template {TEMPLATE_NAME}
 ```
 
 ## Remove Account's Template Customization
